@@ -115,6 +115,7 @@ export function FileTree({ rootPath }: FileTreeProps) {
                 width: '100%',
                 height: `${virtualItem.size}px`,
                 transform: `translateY(${virtualItem.start}px)`,
+                pointerEvents: 'auto',
               }}
             >
               <FileTreeItem

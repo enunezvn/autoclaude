@@ -1,7 +1,7 @@
-import { useDraggable } from '@dnd-kit/core';
 import { ChevronRight, ChevronDown, Folder, File, FileCode, FileJson, FileText, FileImage, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { FileNode } from '../../shared/types';
+import type { DragEvent } from 'react';
 
 interface FileTreeItemProps {
   node: FileNode;
@@ -70,15 +70,19 @@ export function FileTreeItem({
   isLoading,
   onToggle,
 }: FileTreeItemProps) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: node.path,
-    data: {
+  // Use native HTML5 drag-and-drop (more reliable than dnd-kit in portals)
+  const handleDragStart = (e: DragEvent<HTMLDivElement>) => {
+    // Set the drag data as JSON
+    const dragData = {
       type: 'file',
       path: node.path,
       name: node.name,
       isDirectory: node.isDirectory
-    }
-  });
+    };
+    e.dataTransfer.setData('application/json', JSON.stringify(dragData));
+    e.dataTransfer.setData('text/plain', node.name); // Fallback
+    e.dataTransfer.effectAllowed = 'copy';
+  };
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -96,13 +100,11 @@ export function FileTreeItem({
 
   return (
     <div
-      ref={setNodeRef}
-      {...attributes}
-      {...listeners}
+      draggable={true}
+      onDragStart={handleDragStart}
       className={cn(
         'flex items-center gap-1 py-1 px-2 rounded cursor-grab select-none',
-        'hover:bg-accent/50 transition-colors',
-        isDragging && 'opacity-50 bg-accent'
+        'hover:bg-accent/50 transition-colors'
       )}
       style={{ paddingLeft: `${depth * 12 + 8}px` }}
       onClick={handleClick}

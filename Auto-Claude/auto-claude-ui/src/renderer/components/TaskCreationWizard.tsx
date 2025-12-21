@@ -1,14 +1,4 @@
 import { useState, useEffect, useCallback, useRef, useMemo, type ClipboardEvent, type DragEvent } from 'react';
-import {
-  DndContext,
-  DragOverlay,
-  useDroppable,
-  type DragEndEvent,
-  type DragStartEvent,
-  PointerSensor,
-  useSensor,
-  useSensors
-} from '@dnd-kit/core';
 import { Loader2, ChevronDown, ChevronUp, Image as ImageIcon, X, RotateCcw, File, Folder, FolderTree, FileDown } from 'lucide-react';
 import {
   Dialog,
@@ -123,39 +113,15 @@ export function TaskCreationWizard({
   const [isDraftRestored, setIsDraftRestored] = useState(false);
   const [pasteSuccess, setPasteSuccess] = useState(false);
 
-  // Drag-and-drop state for file references
-  const [activeDragData, setActiveDragData] = useState<{
-    path: string;
-    name: string;
-    isDirectory: boolean;
-  } | null>(null);
-
   // Ref for the textarea to handle paste events
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
 
   // Drag-and-drop state for images over textarea
   const [isDragOverTextarea, setIsDragOverTextarea] = useState(false);
 
-  // Setup drag sensors with distance constraint to prevent accidental drags
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 8, // 8px movement required before drag starts
-      },
-    })
-  );
-
-  // Setup drop zone for file references (entire form)
-  const { setNodeRef: setDropRef, isOver: isOverDropZone } = useDroppable({
-    id: 'file-drop-zone',
-    data: { type: 'file-drop-zone' }
-  });
-
-  // Setup drop zone for description textarea (inline @mentions)
-  const { setNodeRef: setTextareaDropRef, isOver: isOverTextarea } = useDroppable({
-    id: 'description-drop-zone',
-    data: { type: 'description-drop-zone' }
-  });
+  // Native drag-and-drop state for file references (from file explorer)
+  const [isNativeDragOverForm, setIsNativeDragOverForm] = useState(false);
+  const [isNativeDragOverTextarea, setIsNativeDragOverTextarea] = useState(false);
 
   // Determine if drop zone is at capacity
   const isAtMaxFiles = referencedFiles.length >= MAX_REFERENCED_FILES;
@@ -402,73 +368,61 @@ export function TaskCreationWizard({
   );
 
   /**
-   * Handle drag start - capture file data for overlay
+   * Check if drag event contains file reference data (from file explorer)
    */
-  const handleDragStart = useCallback((event: DragStartEvent) => {
-    const data = event.active.data.current as {
-      type: string;
-      path: string;
-      name: string;
-      isDirectory: boolean;
-    } | undefined;
+  const isFileReferenceDrag = useCallback((e: DragEvent<HTMLElement>): boolean => {
+    // Check if the drag contains our custom file data
+    return e.dataTransfer.types.includes('application/json');
+  }, []);
 
-    if (data?.type === 'file') {
-      setActiveDragData({
-        path: data.path,
-        name: data.name,
-        isDirectory: data.isDirectory
-      });
+  /**
+   * Handle native drag over on form - allow drops
+   */
+  const handleFormDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
+    if (!isFileReferenceDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsNativeDragOverForm(true);
+  }, [isFileReferenceDrag]);
+
+  /**
+   * Handle native drag leave from form
+   */
+  const handleFormDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only set to false if we're leaving the form entirely (not entering a child)
+    const relatedTarget = e.relatedTarget as Node | null;
+    if (!e.currentTarget.contains(relatedTarget)) {
+      setIsNativeDragOverForm(false);
     }
   }, []);
 
   /**
-   * Handle drag end - insert @mention in description or add to referencedFiles
+   * Handle native drop on form - add to referenced files
    */
-  const handleDragEnd = useCallback((event: DragEndEvent) => {
-    const { active, over } = event;
+  const handleFormDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsNativeDragOverForm(false);
+    setIsNativeDragOverTextarea(false);
 
-    // Clear drag state
-    setActiveDragData(null);
+    if (isCreating) return;
 
-    // If not dropped on a valid target, do nothing
-    if (!over) return;
+    // Parse the drag data
+    const jsonData = e.dataTransfer.getData('application/json');
+    if (!jsonData) return;
 
-    const data = active.data.current as {
-      type?: string;
-      path?: string;
-      name?: string;
-      isDirectory?: boolean;
-    } | undefined;
+    try {
+      const data = JSON.parse(jsonData) as {
+        type?: string;
+        path?: string;
+        name?: string;
+        isDirectory?: boolean;
+      };
 
-    // Only process file drops
-    if (data?.type !== 'file' || !data.path || !data.name) return;
+      if (data.type !== 'file' || !data.path || !data.name) return;
 
-    // Handle drop on description textarea - insert inline @mention
-    if (over.id === 'description-drop-zone') {
-      const textarea = descriptionRef.current;
-      if (!textarea) return;
-
-      const cursorPos = textarea.selectionStart || 0;
-      const textBefore = description.substring(0, cursorPos);
-      const textAfter = description.substring(cursorPos);
-
-      // Insert @mention at cursor position
-      const mention = `@${data.name}`;
-      const newDescription = textBefore + mention + textAfter;
-      setDescription(newDescription);
-
-      // Set cursor after the inserted mention
-      setTimeout(() => {
-        textarea.focus();
-        const newCursorPos = cursorPos + mention.length;
-        textarea.setSelectionRange(newCursorPos, newCursorPos);
-      }, 0);
-
-      return;
-    }
-
-    // Handle drop on file-drop-zone - add to referenced files list
-    if (over.id === 'file-drop-zone') {
       // Check if we're at the max limit
       if (referencedFiles.length >= MAX_REFERENCED_FILES) {
         setError(`Maximum of ${MAX_REFERENCED_FILES} referenced files allowed`);
@@ -491,8 +445,81 @@ export function TaskCreationWizard({
       };
 
       setReferencedFiles(prev => [...prev, newFile]);
+    } catch {
+      // Invalid JSON, ignore
     }
-  }, [referencedFiles, description]);
+  }, [referencedFiles, isCreating]);
+
+  /**
+   * Handle native drag over on textarea wrapper - for @mention insertion
+   */
+  const handleTextareaWrapperDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
+    if (!isFileReferenceDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsNativeDragOverTextarea(true);
+    setIsNativeDragOverForm(true); // Keep form highlight too
+  }, [isFileReferenceDrag]);
+
+  /**
+   * Handle native drag leave from textarea wrapper
+   */
+  const handleTextareaWrapperDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const relatedTarget = e.relatedTarget as Node | null;
+    if (!e.currentTarget.contains(relatedTarget)) {
+      setIsNativeDragOverTextarea(false);
+    }
+  }, []);
+
+  /**
+   * Handle native drop on textarea wrapper - insert @mention
+   */
+  const handleTextareaWrapperDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsNativeDragOverForm(false);
+    setIsNativeDragOverTextarea(false);
+
+    if (isCreating) return;
+
+    // Parse the drag data
+    const jsonData = e.dataTransfer.getData('application/json');
+    if (!jsonData) return;
+
+    try {
+      const data = JSON.parse(jsonData) as {
+        type?: string;
+        path?: string;
+        name?: string;
+        isDirectory?: boolean;
+      };
+
+      if (data.type !== 'file' || !data.path || !data.name) return;
+
+      const textarea = descriptionRef.current;
+      if (!textarea) return;
+
+      const cursorPos = textarea.selectionStart || 0;
+      const textBefore = description.substring(0, cursorPos);
+      const textAfter = description.substring(cursorPos);
+
+      // Insert @mention at cursor position
+      const mention = `@${data.name}`;
+      const newDescription = textBefore + mention + textAfter;
+      setDescription(newDescription);
+
+      // Set cursor after the inserted mention
+      setTimeout(() => {
+        textarea.focus();
+        const newCursorPos = cursorPos + mention.length;
+        textarea.setSelectionRange(newCursorPos, newCursorPos);
+      }, 0);
+    } catch {
+      // Invalid JSON, ignore
+    }
+  }, [description, isCreating]);
 
   /**
    * Parse @mentions from description and create ReferencedFile entries
@@ -633,53 +660,46 @@ export function TaskCreationWizard({
   };
 
   return (
-    <DndContext
-      sensors={sensors}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-    >
-      <Dialog open={open} onOpenChange={handleClose}>
-        <DialogContent
-          className={cn(
-            "max-h-[90vh] p-0 overflow-hidden transition-all duration-300 ease-out",
-            showFileExplorer ? "sm:max-w-[900px]" : "sm:max-w-[550px]"
-          )}
-          hideCloseButton={showFileExplorer}
-        >
-          <div className="flex h-full min-h-0 overflow-hidden">
-            {/* Form content - Drop zone wrapper */}
-            <div
-              ref={setDropRef}
-              className={cn(
-                "flex-1 flex flex-col p-6 min-w-0 min-h-0 overflow-y-auto relative transition-all duration-150 ease-out",
-                // Default state - no border
-                !activeDragData && "",
-                // Subtle visual feedback when dragging - border on the entire form
-                activeDragData && !isOverDropZone && "border-2 border-dashed border-muted-foreground/40 rounded-lg",
-                // Clear drop target feedback when over the form
-                activeDragData && isOverDropZone && !isAtMaxFiles && "border-2 border-solid border-info rounded-lg bg-info/5",
-                // Warning state when at capacity
-                activeDragData && isOverDropZone && isAtMaxFiles && "border-2 border-solid border-warning rounded-lg bg-warning/5"
-              )}
-            >
-              {/* Drop zone indicator overlay - shows when dragging over form */}
-              {activeDragData && isOverDropZone && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none rounded-lg">
-                  <div className={cn(
-                    "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium shadow-lg",
-                    isAtMaxFiles
-                      ? "bg-warning text-warning-foreground"
-                      : "bg-info text-info-foreground"
-                  )}>
-                    <FileDown className="h-4 w-4" />
-                    <span>
-                      {isAtMaxFiles
-                        ? `Maximum ${MAX_REFERENCED_FILES} files reached`
-                        : 'Drop file to add reference'}
-                    </span>
-                  </div>
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent
+        className={cn(
+          "max-h-[90vh] p-0 overflow-hidden transition-all duration-300 ease-out",
+          showFileExplorer ? "sm:max-w-[900px]" : "sm:max-w-[550px]"
+        )}
+        hideCloseButton={showFileExplorer}
+      >
+        <div className="flex min-h-[400px] h-full overflow-hidden">
+          {/* Form content - Drop zone wrapper */}
+          <div
+            data-drop-zone="file"
+            onDragOver={handleFormDragOver}
+            onDragLeave={handleFormDragLeave}
+            onDrop={handleFormDrop}
+            className={cn(
+              "flex-1 flex flex-col p-6 min-w-[300px] min-h-[300px] overflow-y-auto relative transition-all duration-150 ease-out",
+              // Native drag feedback - border on the entire form
+              isNativeDragOverForm && !isAtMaxFiles && "border-2 border-solid border-info rounded-lg bg-info/5",
+              isNativeDragOverForm && isAtMaxFiles && "border-2 border-solid border-warning rounded-lg bg-warning/5"
+            )}
+          >
+            {/* Drop zone indicator overlay - shows when dragging over form */}
+            {isNativeDragOverForm && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none rounded-lg">
+                <div className={cn(
+                  "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium shadow-lg",
+                  isAtMaxFiles
+                    ? "bg-warning text-warning-foreground"
+                    : "bg-info text-info-foreground"
+                )}>
+                  <FileDown className="h-4 w-4" />
+                  <span>
+                    {isAtMaxFiles
+                      ? `Maximum ${MAX_REFERENCED_FILES} files reached`
+                      : 'Drop file to add reference'}
+                  </span>
                 </div>
-              )}
+              </div>
+            )}
         <DialogHeader>
           <div className="flex items-center justify-between">
             <DialogTitle className="text-foreground">Create New Task</DialogTitle>
@@ -713,7 +733,13 @@ export function TaskCreationWizard({
               Description <span className="text-destructive">*</span>
             </Label>
             {/* Wrap textarea in drop zone for file @mentions */}
-            <div ref={setTextareaDropRef} className="relative">
+            <div
+              data-drop-zone="textarea"
+              onDragOver={handleTextareaWrapperDragOver}
+              onDragLeave={handleTextareaWrapperDragLeave}
+              onDrop={handleTextareaWrapperDrop}
+              className="relative"
+            >
               {/* Syntax highlight overlay for @mentions */}
               <div
                 className="absolute inset-0 pointer-events-none overflow-hidden rounded-md border border-transparent"
@@ -758,16 +784,16 @@ export function TaskCreationWizard({
                   "resize-y min-h-[120px] max-h-[400px] relative bg-transparent",
                   // Image drop feedback (native drops)
                   isDragOverTextarea && !isCreating && "border-primary bg-primary/5 ring-2 ring-primary/20",
-                  // File reference drop feedback (dnd-kit drops for @mentions)
-                  activeDragData && isOverTextarea && "border-info bg-info/5 ring-2 ring-info/20"
+                  // File reference drop feedback (native drag)
+                  isNativeDragOverTextarea && "border-info bg-info/5 ring-2 ring-info/20"
                 )}
                 style={{ caretColor: 'auto' }}
               />
               {/* Drop indicator for file references */}
-              {activeDragData && isOverTextarea && (
+              {isNativeDragOverTextarea && (
                 <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 rounded-md bg-info text-info-foreground text-xs font-medium shadow-sm pointer-events-none z-10">
                   <File className="h-3 w-3" />
-                  <span>Insert @{activeDragData.name}</span>
+                  <span>Drop to insert @mention</span>
                 </div>
               )}
             </div>
@@ -1089,22 +1115,7 @@ export function TaskCreationWizard({
               />
             )}
           </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Drag overlay - shows what's being dragged */}
-      <DragOverlay>
-        {activeDragData && (
-          <div className="flex items-center gap-2 bg-card border border-border rounded-md px-3 py-2 shadow-lg">
-            {activeDragData.isDirectory ? (
-              <Folder className="h-4 w-4 text-warning" />
-            ) : (
-              <File className="h-4 w-4 text-muted-foreground" />
-            )}
-            <span className="text-sm">{activeDragData.name}</span>
-          </div>
-        )}
-      </DragOverlay>
-    </DndContext>
+      </DialogContent>
+    </Dialog>
   );
 }
