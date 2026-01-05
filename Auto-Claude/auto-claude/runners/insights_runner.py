@@ -184,8 +184,11 @@ Current question: {message}"""
                 system_prompt=system_prompt,
                 allowed_tools=[
                     "Read",
+                    "Write",
+                    "Edit",
                     "Glob",
                     "Grep",
+                    "Bash",
                 ],
                 max_turns=30,  # Allow sufficient turns for codebase exploration
                 cwd=str(project_path),
